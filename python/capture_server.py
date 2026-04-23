@@ -15,9 +15,9 @@ Run:
 Then open http://localhost:8090 in your browser.
 """
 from __future__ import annotations
-import os, cv2, time, json, threading, argparse, shutil
+import os, cv2, time, json, threading, argparse, shutil, zipfile, io
 from datetime import datetime
-from flask import Flask, Response, request, jsonify, render_template_string
+from flask import Flask, Response, request, jsonify, render_template_string, send_file, send_from_directory
 
 # ── Directories ───────────────────────────────────────
 DATASET_DIR  = "dataset"
@@ -136,6 +136,25 @@ def clear_dataset():
         os.makedirs(ANOMALY_DIR, exist_ok=True)
     return jsonify({"ok": True})
 
+@app.route("/image/<label>/<fname>")
+def get_image(label, fname):
+    folder = NORMAL_DIR if label == "normal" else ANOMALY_DIR
+    return send_from_directory(os.path.abspath(folder), fname)
+
+@app.route("/download_zip")
+def download_zip():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for folder, lname in [(NORMAL_DIR, "normal"), (ANOMALY_DIR, "anomaly")]:
+            for fname in os.listdir(folder):
+                if fname.lower().endswith(".jpg"):
+                    zf.write(os.path.join(folder, fname), f"{lname}/{fname}")
+    buf.seek(0)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return send_file(buf, as_attachment=True,
+                     download_name=f"solar_dataset_{ts}.zip",
+                     mimetype="application/zip")
+
 @app.route("/")
 def index():
     return render_template_string(CAPTURE_HTML)
@@ -217,6 +236,8 @@ main{position:relative;z-index:1;max-width:1300px;margin:0 auto;padding:20px 24p
 .gthumb .glabel{position:absolute;bottom:0;left:0;right:0;font-size:.6rem;font-weight:600;text-align:center;padding:2px}
 .gthumb.gn .glabel{background:rgba(34,197,94,.8);color:#fff}
 .gthumb.ga .glabel{background:rgba(239,68,68,.8);color:#fff}
+.gthumb .dl-btn{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:4px;background:rgba(0,0,0,.65);border:none;cursor:pointer;color:#fff;font-size:.65rem;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .15s;padding:0;line-height:1}
+.gthumb:hover .dl-btn{opacity:1}
 
 /* Action buttons */
 .action-row{display:flex;gap:8px}
@@ -295,9 +316,15 @@ main{position:relative;z-index:1;max-width:1300px;margin:0 auto;padding:20px 24p
     </div>
 
     <!-- Actions -->
+    <div class="action-row" style="flex-wrap:wrap">
+      <button class="abtn" onclick="clearDataset('normal')" style="flex:1 1 auto">🗑 Clear Normal</button>
+      <button class="abtn" onclick="clearDataset('anomaly')" style="flex:1 1 auto">🗑 Clear Anomaly</button>
+    </div>
+    <div class="action-row" style="flex-wrap:wrap">
+      <button class="abtn" onclick="clearAll()" style="flex:1 1 auto;color:#ef4444;border-color:rgba(239,68,68,.35)">🗑 Delete ALL Images</button>
+      <button class="abtn" onclick="downloadZip()" style="flex:1 1 auto;color:#38bdf8;border-color:rgba(56,189,248,.35)">💾 Save All to PC (ZIP)</button>
+    </div>
     <div class="action-row">
-      <button class="abtn" onclick="clearDataset('normal')">🗑 Clear Normal</button>
-      <button class="abtn" onclick="clearDataset('anomaly')">🗑 Clear Anomaly</button>
       <button class="abtn go" onclick="goTrain()">🧠 Train Model →</button>
     </div>
 
@@ -352,10 +379,36 @@ function addThumb(base64, label, fname) {
   const gallery = document.getElementById('gallery');
   const div = document.createElement('div');
   div.className = 'gthumb ' + (label==='normal'?'gn':'ga');
-  div.innerHTML = `<img src="data:image/jpeg;base64,${base64}"/><div class="glabel">${label}</div>`;
+  div.dataset.fname = fname;
+  div.dataset.label = label;
+  div.innerHTML = `<img src="data:image/jpeg;base64,${base64}"/>` +
+    `<div class="glabel">${label}</div>` +
+    `<button class="dl-btn" title="Save image" onclick="downloadImage('${label}','${fname}',event)">⬇</button>`;
   gallery.prepend(div);
-  // Keep max 30 thumbs
   while(gallery.children.length > 30) gallery.removeChild(gallery.lastChild);
+}
+
+function downloadImage(label, fname, e) {
+  e.stopPropagation();
+  const a = document.createElement('a');
+  a.href = `/image/${label}/${fname}`;
+  a.download = fname;
+  a.click();
+}
+
+function clearAll() {
+  if (!confirm('Delete ALL captured images (normal + anomaly)?')) return;
+  fetch('/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({label:'all'})})
+    .then(()=>{ loadCounts(); document.getElementById('gallery').innerHTML=''; })
+    .then(()=>showToast('🗑 All images deleted', 'ok'));
+}
+
+function downloadZip() {
+  const n = parseInt(document.getElementById('cntNormal').textContent||'0');
+  const a = parseInt(document.getElementById('cntAnomaly').textContent||'0');
+  if (n+a === 0) { showToast('⚠️ No images to download', 'err'); return; }
+  showToast('⏳ Preparing ZIP...', 'ok');
+  window.location.href = '/download_zip';
 }
 
 function clearDataset(label) {
@@ -375,7 +428,7 @@ function loadCounts() {
 function goTrain() {
   const n = parseInt(document.getElementById('cntNormal').textContent);
   if (n < 10) { showToast('⚠️ Capture at least 10 normal images first', 'err'); return; }
-  window.location.href = 'http://localhost:8091';
+  showToast('✅ Run in terminal: python3 train.py', 'ok');
 }
 
 let toastTimer;
