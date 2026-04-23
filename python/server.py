@@ -217,10 +217,14 @@ class RelayController:
 #  Camera Thread
 # ─────────────────────────────────────────────────────
 class CameraThread(threading.Thread):
-    def __init__(self, camera_index: int, engine: AnomalyEngine,
+    def __init__(self, source, engine: AnomalyEngine,
                  relay: RelayController, heatmap_alpha: float = 0.45):
         super().__init__(daemon=True)
-        self.camera_index = camera_index
+        # source can be:
+        #   int  → local webcam index (0, 1, 2 ...)
+        #   str  → phone stream URL e.g. http://192.168.1.x:8080/video
+        self.source = source
+        self.is_url = isinstance(source, str) and source.startswith("http")
         self.engine = engine
         self.relay = relay
         self.heatmap_alpha = heatmap_alpha
@@ -297,17 +301,23 @@ class CameraThread(threading.Thread):
         self._running = False
 
     def run(self):
-        cap = cv2.VideoCapture(self.camera_index)
+        # Open webcam (int) or phone stream URL (str)
+        cap = cv2.VideoCapture(self.source)
         if not cap.isOpened():
-            log.error(f"Cannot open camera {self.camera_index}")
-            self._log_event("error", f"Camera {self.camera_index} not found")
+            src_label = self.source if self.is_url else f"webcam #{self.source}"
+            log.error(f"Cannot open source: {src_label}")
+            self._log_event("error", f"Cannot open: {src_label} — is the app running?")
             return
 
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, 30)
+        # Only set resolution for local webcams — URL streams use phone's resolution
+        if not self.is_url:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+
         self.cap_open = True
-        self._log_event("success", f"Camera {self.camera_index} opened — calibrating ({self.engine.ref_frames_needed} frames needed)")
+        src_label = self.source if self.is_url else f"webcam #{self.source}"
+        self._log_event("success", f"Source opened: {src_label} — calibrating ({self.engine.ref_frames_needed} frames needed)")
 
         fps_t0 = time.time()
         fps_count = 0
@@ -631,25 +641,50 @@ def on_recalibrate():
 def main():
     global camera_thread, relay, engine
 
-    parser = argparse.ArgumentParser(description="SolarGuard AI Server")
-    parser.add_argument("--camera", type=int, default=0,
-                        help="Camera index (default: 0)")
+    parser = argparse.ArgumentParser(
+        description="SolarGuard AI Server",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 server.py                                    # laptop webcam
+  python3 server.py --source 1                         # second webcam
+  python3 server.py --source http://192.168.1.5:8080/video     # Android IP Webcam app
+  python3 server.py --source http://192.168.1.5:4747/video     # Android DroidCam app
+  python3 server.py --source http://192.168.1.5:8080/video --esp-ip 192.168.1.100
+        """
+    )
+    parser.add_argument(
+        "--source", default="0",
+        help=("Camera source. Use '0','1',... for webcam index, "
+              "or a URL for phone stream. "
+              "Android IP Webcam: http://PHONE_IP:8080/video  "
+              "Android DroidCam:  http://PHONE_IP:4747/video  "
+              "Default: 0 (built-in webcam)")
+    )
     parser.add_argument("--esp-ip", default="192.168.1.100",
                         help="ESP32 IP address")
     parser.add_argument("--threshold", type=float, default=5.0,
                         help="Anomaly score threshold (default: 5.0)")
     parser.add_argument("--ref-frames", type=int, default=40,
-                        help="Number of frames for reference calibration (default: 40)")
-    parser.add_argument("--port", type=int, default=5000,
-                        help="Web server port (default: 5000)")
+                        help="Frames for calibration (default: 40)")
+    parser.add_argument("--port", type=int, default=8080,
+                        help="Web server port (default: 8080)")
     parser.add_argument("--no-esp32", action="store_true",
-                        help="Disable ESP32 relay (dashboard only)")
+                        help="Disable ESP32 relay commands")
     args = parser.parse_args()
+
+    # Convert source to int if it's a plain number, else keep as URL string
+    source = args.source
+    if source.isdigit():
+        source = int(source)
+        source_label = f"Webcam #{source}"
+    else:
+        source_label = source   # URL string
 
     log.info("=" * 55)
     log.info("  SolarGuard AI — Real-Time Detection Server")
     log.info("=" * 55)
-    log.info(f"  Camera      : {args.camera}")
+    log.info(f"  Source      : {source_label}")
     log.info(f"  ESP32 IP    : {args.esp_ip}  (disabled: {args.no_esp32})")
     log.info(f"  Threshold   : {args.threshold}")
     log.info(f"  Ref Frames  : {args.ref_frames}")
@@ -665,13 +700,14 @@ def main():
         enabled=not args.no_esp32
     )
     camera_thread = CameraThread(
-        camera_index=args.camera,
+        source=source,
         engine=engine,
         relay=relay
     )
     camera_thread.start()
 
-    socketio.run(app, host="0.0.0.0", port=args.port, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
+    socketio.run(app, host="0.0.0.0", port=args.port, debug=False,
+                 use_reloader=False, allow_unsafe_werkzeug=True)
 
 
 if __name__ == "__main__":
