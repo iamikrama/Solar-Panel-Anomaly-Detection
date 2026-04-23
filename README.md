@@ -1,23 +1,39 @@
 # SolarGuard AI — Solar Panel Anomaly Detection System
 
-> Built with Python · OpenCV · Flask · Edge Impulse · ESP32 · Relay Module
+> **Phone Camera → Capture Dataset → Train Model → Live Detection → ESP32 Relay Trigger**
+
+Built with Python · OpenCV · scikit-learn · Flask · ESP32
 
 ---
 
-## ✅ What Has Been Built (vs the project spec)
+## What Is This Project?
 
-| Project Requirement | Status | Notes |
-|---|---|---|
-| AI model detects clean vs dirty panel | ✅ Built | Reference-frame deviation (same math as FOMO-AD). Optional: plug in real Edge Impulse `.eim` model |
-| Only clean panel images needed for training | ✅ Built | Calibration captures 40 clean frames as baseline — no dirty images needed |
-| Camera reads panel in real time | ✅ Built | Real webcam via OpenCV at ~12 fps |
-| Python script computes anomaly score | ✅ Built | `server.py` — score 0–10, threshold configurable |
-| If score > threshold → sends command to ESP32 | ✅ Built | HTTP GET `/relay?state=ON` sent automatically |
-| ESP32 hosts WiFi web server | ✅ Built | `relay_controller.ino` — full web server on port 80 |
-| ESP32 controls relay ON/OFF | ✅ Built | GPIO 26, active-high, with 60s safety auto-off |
-| Live monitoring dashboard | ✅ Built | Real-time camera feed, chart, log, history at `localhost:8080` |
-| ESP32-CAM support | ✅ Built | Pass MJPEG URL via `--source http://ESP32-CAM-IP/` |
-| Edge Impulse `.eim` model integration | ✅ Built | In `detect.py` — use when you have a trained model downloaded |
+An AI-powered system that automatically detects when a solar panel is dirty or covered, and triggers a physical cleaning mechanism — no human involvement needed.
+
+Solar panels lose efficiency when covered with dust, bird droppings, or debris. This system automates the entire detection and cleaning process using a phone camera, machine learning, and an ESP32 microcontroller.
+
+---
+
+## System Architecture
+
+```
+📱 Phone Camera
+      │
+      │  HTTP stream (WiFi)
+      ▼
+🖥️  Python Server (laptop)
+      │
+      ├─ capture_server.py  →  capture labelled images (Step 1)
+      ├─ train.py           →  train ML model on dataset (Step 2)
+      └─ server.py          →  live detection + relay control (Step 3)
+                                    │
+                                    │  HTTP request (WiFi)
+                                    ▼
+                              📡 ESP32 Microcontroller
+                                    │
+                                    ▼
+                              ⚡ Relay Module → Cleaning Mechanism
+```
 
 ---
 
@@ -26,19 +42,26 @@
 ```
 solar panel anomaly/
 │
-├── python/                        ← Run this on the laptop
-│   ├── server.py                  ← MAIN script — start here
-│   ├── detect.py                  ← Alternative: uses real Edge Impulse .eim model
+├── python/
+│   ├── capture_server.py      ← STEP 1: Capture images from phone
+│   ├── train.py               ← STEP 2: Train the ML model
+│   ├── server.py              ← STEP 3: Live detection + ESP32 control
+│   ├── detect.py              ← Alternative: Edge Impulse .eim model
 │   ├── requirements.txt
+│   ├── dataset/               ← Auto-created: captured images
+│   │   ├── normal/            ← Clean panel images
+│   │   └── anomaly/           ← Dirty panel images
+│   ├── model/                 ← Auto-created: saved trained model
+│   │   └── solarguard_model.pkl
 │   ├── templates/
-│   │   └── index.html             ← Dashboard UI (auto-served by server.py)
-│   └── logs/                      ← Auto-created: CSV + log files
+│   │   └── index.html         ← Live detection dashboard
+│   └── logs/
 │
 ├── esp32/
 │   └── relay_controller/
-│       └── relay_controller.ino   ← Flash this to ESP32
+│       └── relay_controller.ino   ← Flash this to your ESP32
 │
-├── dashboard/                     ← Standalone animated demo (no camera needed)
+├── dashboard/                 ← Standalone demo (no server needed)
 │   ├── index.html
 │   ├── style.css
 │   └── app.js
@@ -48,163 +71,185 @@ solar panel anomaly/
 
 ---
 
-## How to Run — Step by Step
+## Quick Start
 
-### Prerequisites
-- Python 3.9 or newer
-- A USB webcam (or ESP32-CAM on same WiFi)
-- ESP32 board (optional — system works without it for detection only)
-- Arduino IDE (to flash ESP32)
-
----
-
-### STEP 1 — Install Python dependencies
-
-Open a terminal and run:
+### 1. Install Dependencies
 
 ```bash
 cd "solar panel anomaly/python"
-pip install flask flask-socketio eventlet opencv-python numpy requests
+pip install -r requirements.txt
 ```
 
 ---
 
-### STEP 2 — Run the detection server
+## STEP 1 — Capture Images from Phone
+
+### Setup phone stream
+**Android:** Install **"IP Webcam"** from Play Store → open app → tap **Start Server**
+**iOS:** Install **"IP Camera Lite"** from App Store → open app
+
+> Note the IP shown in the app (e.g. `192.168.1.5:8080`)
+> Phone and laptop must be on the **same WiFi network**
+
+### Run capture server
+```bash
+python3 capture_server.py --source http://192.168.1.5:8080/video
+```
+
+Open **http://localhost:8090** in your browser.
+
+### How to capture
+1. Select label: **✅ Normal** (clean panel) or **⚠️ Anomaly** (dirty/blocked)
+2. Point phone at the panel
+3. Press **📸 Capture** button — saves **one image per press**
+4. You can also press **`Space`** as a shortcut
+5. Repeat until you have enough images
+
+**Recommended dataset size:**
+- Normal images: **≥ 40** (more = better baseline)
+- Anomaly images: **≥ 20** (optional — system works with only normal images)
+
+Images are saved to `dataset/normal/` and `dataset/anomaly/` automatically.
+
+---
+
+## STEP 2 — Train the Model
 
 ```bash
-cd "solar panel anomaly/python"
+python3 train.py
+```
+
+The script will:
+- Load all images from `dataset/`
+- Extract features (resize to 64×64 → grayscale → flatten)
+- Apply PCA dimensionality reduction
+- Auto-select model:
+  - **IsolationForest** (if only normal images — unsupervised)
+  - **One-Class SVM** (if anomaly images present — more accurate)
+- Save model to `model/solarguard_model.pkl`
+- Print accuracy report
+
+```
+  Normal correctly identified: 40/40 (100.0%)
+  Anomaly correctly detected:  18/20 (90.0%)
+  ✅ Model saved → model/solarguard_model.pkl
+```
+
+You can force a specific model type:
+```bash
+python3 train.py --model iso      # IsolationForest
+python3 train.py --model svm_oc   # One-Class SVM
+```
+
+---
+
+## STEP 3 — Live Detection
+
+```bash
+# Phone as camera, no ESP32 yet (testing)
+python3 server.py --source http://192.168.1.5:8080/video --no-esp32 --port 8080
+
+# With ESP32 connected
+python3 server.py --source http://192.168.1.5:8080/video --esp-ip 192.168.1.100 --port 8080
+
+# Webcam fallback (no phone)
 python3 server.py --no-esp32 --port 8080
 ```
 
-> `--no-esp32` disables relay commands (use this if ESP32 is not connected yet)
+Open **http://localhost:8080** — the dashboard shows:
+- Live camera feed with anomaly heatmap overlay
+- Real-time anomaly score chart (0–10)
+- Panel status: **CLEAN** / **DIRTY**
+- Relay status and event log
+- Adjustable threshold slider
 
-You will see:
+### How detection works
+
 ```
-Camera 0 opened — calibrating (40 frames needed)
-Running on http://localhost:8080
+1. If model/solarguard_model.pkl exists:
+   → Loads trained model (from Step 2)
+   → Each frame is classified by the model
+   → Outputs anomaly score 0–10
+
+2. If no model found:
+   → Falls back to reference-frame detection
+   → Captures 40 clean frames as baseline on startup
+   → Scores deviation from baseline each frame
+
+3. Score ≥ threshold (default 5.0):
+   → Anomaly confirmed after 5 consecutive dirty frames
+   → HTTP GET → http://ESP32-IP/relay?state=ON
+   → ESP32 triggers relay → cleaning starts
+
+4. Score < threshold for 8 consecutive frames:
+   → HTTP GET → http://ESP32-IP/relay?state=OFF
+   → Cleaning stops
 ```
 
 ---
 
-### STEP 3 — Open the dashboard
+## ESP32 Setup
 
-Open your browser and go to:
-```
-http://localhost:8080
-```
-
----
-
-### STEP 4 — Calibrate (IMPORTANT)
-
-1. **Point the webcam at the clean solar panel** — fixed position, good lighting
-2. Click **↺ Recalibrate** in the dashboard
-3. Wait for the green calibration bar to reach 100% (takes ~5 seconds)
-4. The system is now monitoring — it has learned what "clean" looks like
-
----
-
-### STEP 5 — Test detection
-
-- Cover part of the panel with your hand, a cloth, or dust
-- Watch the **Anomaly Score** rise above the threshold (default: 5.0)
-- Panel Status changes to **DIRTY**, relay would trigger
-
----
-
-### STEP 6 — Connect the ESP32 (for full system)
-
-#### Flash the ESP32:
+### Flash the firmware
 1. Open `esp32/relay_controller/relay_controller.ino` in Arduino IDE
-2. Change these two lines at the top:
+2. Update WiFi credentials at the top:
    ```cpp
    const char* WIFI_SSID     = "YourWiFiName";
-   const char* WIFI_PASSWORD = "YourWiFiPassword";
+   const char* WIFI_PASSWORD = "YourPassword";
    ```
-3. Install board: **ESP32 by Espressif Systems** (via Boards Manager)
-4. Install library: **ArduinoJson** (via Library Manager)
-5. Select board → `ESP32 Dev Module` → Upload
-6. Open Serial Monitor at **115200 baud**
-7. Note the IP address printed (e.g. `192.168.1.100`)
+3. Board: **ESP32 Dev Module** (install via Boards Manager)
+4. Library: **ArduinoJson** (install via Library Manager)
+5. Upload → open Serial Monitor at **115200 baud**
+6. Note the IP address shown (e.g. `192.168.1.100`)
 
-#### Wire the relay:
+### Wire the relay
 ```
-ESP32 GPIO 26  ──→  Relay IN
-ESP32 5V / VIN ──→  Relay VCC
-ESP32 GND      ──→  Relay GND
-Relay NO + COM ──→  Cleaning mechanism power circuit
+ESP32 GPIO 26  →  Relay IN
+ESP32 VIN/5V   →  Relay VCC
+ESP32 GND      →  Relay GND
+Relay NO + COM →  Cleaning mechanism circuit
 ```
 
-#### Test the relay manually:
+### Test manually
 ```bash
 curl http://192.168.1.100/relay?state=ON
 curl http://192.168.1.100/relay?state=OFF
-```
-
-#### Run server with ESP32 connected:
-```bash
-python3 server.py --esp-ip 192.168.1.100 --port 8080
-```
-
-Now when an anomaly is detected the Python script automatically sends the HTTP command and the relay triggers.
-
----
-
-### Optional — Use ESP32-CAM instead of webcam
-
-If using ESP32-CAM as the video source:
-```bash
-python3 server.py --source http://192.168.1.101/ --esp-ip 192.168.1.100 --port 8080
+curl http://192.168.1.100/status
 ```
 
 ---
 
-### Optional — Use real Edge Impulse model
-
-If you have downloaded a trained `.eim` model from Edge Impulse:
-
-1. Install the SDK (Linux/WSL2 only):
-   ```bash
-   pip install edge_impulse_linux
-   ```
-2. Place the model at `python/model/your-model.eim`
-3. Use `detect.py` instead:
-   ```bash
-   python3 detect.py --model model/your-model.eim --esp-ip 192.168.1.100
-   ```
-
----
-
-## Useful Commands
+## Command Reference
 
 | Action | Command |
 |---|---|
-| Start server (no ESP32) | `python3 server.py --no-esp32 --port 8080` |
-| Start server (with ESP32) | `python3 server.py --esp-ip 192.168.1.100 --port 8080` |
-| Use camera index 1 | add `--camera 1` |
-| Use ESP32-CAM as source | add `--source http://CAM-IP/` |
+| Capture images (phone) | `python3 capture_server.py --source http://PHONE_IP:8080/video` |
+| Capture images (webcam) | `python3 capture_server.py --source 0` |
+| Train model | `python3 train.py` |
+| Train (force IsolationForest) | `python3 train.py --model iso` |
+| Run detection (no ESP32) | `python3 server.py --no-esp32 --port 8080` |
+| Run detection (with ESP32) | `python3 server.py --esp-ip 192.168.1.100 --port 8080` |
+| Run with phone camera | `python3 server.py --source http://PHONE_IP:8080/video --port 8080` |
 | Change threshold | add `--threshold 4.0` |
-| Stop server | Press `Ctrl+C` in terminal |
+| Use second webcam | add `--source 1` |
+| Stop any server | Press `Ctrl+C` in terminal |
 
 ---
 
-## How the Anomaly Score Works
+## Technology Stack
 
-```
-1. Calibration (first 40 frames):
-   Camera sees clean panel → system builds a pixel-level "normal" map
-
-2. Detection (every frame after):
-   New frame compared against normal map
-   Deviation = how different each pixel is from baseline
-   Score = 95th percentile deviation, scaled to 0–10
-
-3. Decision:
-   Score < threshold (5.0) → CLEAN → relay stays OFF
-   Score ≥ threshold (5.0) → DIRTY → relay turns ON → cleaning triggered
-```
-
-This is the same core principle as FOMO-AD — only clean images are needed for training.
+| Component | Technology |
+|---|---|
+| Camera source | Phone (IP Webcam app) or webcam |
+| Phone stream | HTTP MJPEG over WiFi |
+| Image capture UI | Python Flask (capture_server.py) |
+| Feature extraction | OpenCV + NumPy (64×64 grayscale flatten) |
+| ML model | scikit-learn IsolationForest / One-Class SVM |
+| Inference server | Python Flask + Socket.IO (server.py) |
+| Live dashboard | HTML/CSS/JS (real-time via WebSocket) |
+| ESP32 communication | HTTP GET over WiFi |
+| Microcontroller | ESP32 |
+| Physical output | Relay module (GPIO 26) |
 
 ---
 
@@ -212,13 +257,36 @@ This is the same core principle as FOMO-AD — only clean images are needed for 
 
 | Problem | Fix |
 |---|---|
+| Phone stream not opening | Check IP in app, same WiFi network, use `/video` endpoint |
 | Port 8080 in use | Try `--port 8090` |
 | Port 5000 in use | macOS AirPlay uses 5000 — always use `--port 8080` |
-| Camera not opening | Try `--camera 1` or `--camera 2` |
-| Score always high | Recalibrate while pointing at clean panel in good lighting |
-| Score never rises | Lower the threshold: `--threshold 3.0` |
-| ESP32 not responding | Check IP address in Serial Monitor, both devices on same WiFi |
+| Score always high | Not enough training data — capture more normal images and retrain |
+| Score never rises | Lower threshold: `--threshold 3.0` |
+| Model loads but wrong | Recapture dataset with correct labels and retrain |
+| ESP32 not responding | Check IP in Serial Monitor, both on same WiFi |
+| Relay fires immediately | Warmup phase running — wait 20 frames after calibration |
 
 ---
 
-*Built using Edge Impulse concept · Python · Flask · OpenCV · ESP32 · Relay Module*
+## How the Anomaly Score Works
+
+```
+Training phase (train.py):
+  40+ clean panel photos → feature extraction → IsolationForest learns "normal"
+
+Inference phase (server.py), per frame:
+  Frame → resize 64×64 → grayscale → flatten → PCA → model.predict()
+  Model output → decision score → mapped to 0–10
+
+  Score 0–4  →  CLEAN  →  relay stays OFF
+  Score 5–10 →  DIRTY  →  relay triggers ON  →  ESP32 HTTP command sent
+
+Debounce:
+  Must see 5 consecutive dirty frames before relay fires
+  Must see 8 consecutive clean frames before relay turns off
+  (prevents false triggers from single noisy frames)
+```
+
+---
+
+*Built with Python · OpenCV · scikit-learn · Flask · Socket.IO · ESP32 · Relay Module*
