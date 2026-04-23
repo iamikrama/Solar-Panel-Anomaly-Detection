@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>SolarGuard AI — Live Detection</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#060b14;--bg2:#0c1423;--border:rgba(99,179,237,0.13);--accent:#38bdf8;--green:#22c55e;--red:#ef4444;--orange:#f97316;--text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;--card:rgba(13,22,40,0.9)}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.bg-glow{position:fixed;border-radius:50%;filter:blur(120px);opacity:.15;pointer-events:none;z-index:0}
+.g1{width:500px;height:500px;top:-150px;right:-100px;background:radial-gradient(circle,#0ea5e9,transparent 70%)}
+.g2{width:400px;height:400px;bottom:-100px;left:-80px;background:radial-gradient(circle,#6366f1,transparent 70%)}
+header{position:sticky;top:0;z-index:100;background:rgba(6,11,20,.92);backdrop-filter:blur(16px);border-bottom:1px solid var(--border);padding:0 24px}
+.hdr{max-width:1500px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:60px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand-icon{width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#0ea5e9,#6366f1);display:grid;place-items:center;font-size:1.1rem}
+.brand-name{font-size:1rem;font-weight:700;letter-spacing:-.02em}
+.brand-name span{color:var(--accent)}
+.brand-sub{font-size:.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+.hdrnav{display:flex;align-items:center;gap:20px}
+.dot-status{display:flex;align-items:center;gap:7px;font-size:.82rem;color:var(--text2)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.mono{font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--text3)}
+main{position:relative;z-index:1;max-width:1500px;margin:0 auto;padding:20px 24px 48px;display:flex;flex-direction:column;gap:20px}
+
+/* Calibration banner */
+.cal-banner{background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);border-radius:10px;padding:14px 20px;display:flex;align-items:center;gap:14px;font-size:.85rem}
+.cal-banner.hidden{display:none}
+.cal-bar-wrap{flex:1;height:6px;background:rgba(255,255,255,.08);border-radius:99px;overflow:hidden}
+.cal-bar{height:100%;background:var(--green);border-radius:99px;transition:width .3s}
+.cal-label{color:var(--green);font-weight:600;white-space:nowrap}
+.btn-recal{background:rgba(56,189,248,.15);border:1px solid var(--accent);color:var(--accent);font-size:.75rem;font-family:'Inter',sans-serif;padding:5px 12px;border-radius:6px;cursor:pointer}
+.btn-recal:hover{background:rgba(56,189,248,.25)}
+
+/* Stats row */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;backdrop-filter:blur(12px)}
+.card-label{font-size:.68rem;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:6px}
+.card-val{font-size:1.9rem;font-weight:800;letter-spacing:-.03em;display:block}
+.card-val.green{color:var(--green)}
+.card-val.red{color:var(--red)}
+.bar-wrap{height:5px;background:rgba(255,255,255,.06);border-radius:99px;overflow:hidden;margin-top:10px}
+.bar{height:100%;width:0;background:linear-gradient(90deg,var(--green),#eab308,var(--red));border-radius:99px;transition:width .4s}
+.badge{display:inline-flex;align-items:center;gap:5px;margin-top:8px;padding:3px 9px;border-radius:99px;font-size:.7rem;font-weight:500}
+.badge.clean{background:rgba(34,197,94,.12);color:var(--green);border:1px solid rgba(34,197,94,.25)}
+.badge.dirty{background:rgba(239,68,68,.12);color:var(--red);border:1px solid rgba(239,68,68,.25)}
+.badge .dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+.toggle-wrap{margin-top:10px}
+.toggle{width:44px;height:22px;border-radius:11px;background:rgba(255,255,255,.08);border:1px solid var(--border);position:relative;cursor:pointer;transition:background .3s}
+.toggle.on{background:rgba(34,197,94,.25);border-color:var(--green)}
+.toggle-knob{position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--text3);transition:left .3s,background .3s}
+.toggle.on .toggle-knob{left:24px;background:var(--green)}
+
+/* Grid */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.ph{display:flex;align-items:center;justify-content:space-between;padding:13px 18px;border-bottom:1px solid var(--border)}
+.ph-title{font-size:.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.06em}
+.live-badge{font-size:.65rem;font-weight:700;padding:2px 7px;border-radius:4px;background:rgba(239,68,68,.18);color:var(--red);display:flex;align-items:center;gap:4px}
+.rdot{width:5px;height:5px;border-radius:50%;background:var(--red);animation:blink 1s infinite}
+
+/* Camera */
+.cam-wrap{position:relative;background:#000}
+#camFeed{display:block;width:100%;height:auto}
+.cam-info{display:flex;justify-content:space-between;padding:5px 12px;font-family:'JetBrains Mono',monospace;font-size:.65rem;color:var(--text3);background:rgba(0,0,0,.6)}
+.no-cam{padding:60px 20px;text-align:center;color:var(--text3);font-size:.85rem}
+
+/* Chart */
+.chart-wrap{padding:14px 18px 0}
+#scoreChart{width:100%!important}
+.chart-legend{display:flex;gap:16px;padding:10px 18px;border-top:1px solid var(--border)}
+.leg{display:flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text2)}
+.leg-dot{width:9px;height:9px;border-radius:50%}
+.leg-line{width:18px;height:2px;background:var(--orange);border-radius:1px}
+
+/* Bottom */
+.bottom{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.log-box{height:220px;overflow-y:auto;padding:10px 14px;display:flex;flex-direction:column;gap:5px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+.log-entry{display:flex;gap:8px;font-size:.7rem;font-family:'JetBrains Mono',monospace;padding:5px 8px;border-radius:5px;background:rgba(255,255,255,.02);animation:logIn .25s ease}
+@keyframes logIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1}}
+.log-t{color:var(--text3);flex-shrink:0}
+.log-m{flex:1}
+.log-entry.info .log-m{color:var(--accent)}
+.log-entry.warn .log-m{color:var(--orange)}
+.log-entry.error .log-m{color:var(--red)}
+.log-entry.success .log-m{color:var(--green)}
+.tbl-wrap{overflow:auto;max-height:220px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+table{width:100%;border-collapse:collapse;font-size:.75rem}
+th{text-align:left;padding:8px 14px;color:var(--text3);font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2)}
+td{padding:7px 14px;border-bottom:1px solid rgba(255,255,255,.04);color:var(--text2);font-family:'JetBrains Mono',monospace}
+.td-dirty{color:var(--red);font-weight:600}
+.td-clean{color:var(--green);font-weight:600}
+.td-high{color:var(--red)}
+.td-low{color:var(--green)}
+.td-med{color:var(--orange)}
+
+/* Controls */
+.ctrl-row{display:flex;align-items:center;gap:10px;padding:13px 18px;border-top:1px solid var(--border)}
+.ctrl-label{font-size:.72rem;color:var(--text3)}
+.ctrl-input{background:rgba(255,255,255,.06);border:1px solid var(--border);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.78rem;padding:4px 8px;border-radius:6px;width:72px;text-align:center;outline:none}
+.ctrl-input:focus{border-color:var(--accent)}
+.btn{background:rgba(255,255,255,.06);border:1px solid var(--border);color:var(--text2);font-size:.72rem;font-family:'Inter',sans-serif;padding:4px 10px;border-radius:6px;cursor:pointer}
+.btn:hover{background:rgba(56,189,248,.12);color:var(--accent);border-color:var(--accent)}
+
+/* Alert */
+.alert{position:fixed;bottom:-80px;left:50%;transform:translateX(-50%);min-width:320px;transition:bottom .4s cubic-bezier(.4,0,.2,1);z-index:200}
+.alert.show{bottom:24px}
+.alert-inner{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);backdrop-filter:blur(16px);border-radius:10px;padding:12px 18px;display:flex;align-items:center;gap:10px;color:#fca5a5;font-size:.83rem;font-weight:500;box-shadow:0 8px 32px rgba(239,68,68,.2)}
+.alert-close{margin-left:auto;background:none;border:none;color:var(--text3);cursor:pointer;font-size:.9rem}
+
+@media(max-width:900px){.stats{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr}.bottom{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="bg-glow g1"></div>
+<div class="bg-glow g2"></div>
+
+<header>
+  <div class="hdr">
+    <div class="brand">
+      <div class="brand-icon">☀️</div>
+      <div>
+        <div class="brand-name">SolarGuard <span>AI</span></div>
+        <div class="brand-sub">Live Anomaly Detection</div>
+      </div>
+    </div>
+    <div class="hdrnav">
+      <div class="dot-status"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></div>
+      <div class="mono" id="clock">--:--:--</div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- Calibration Banner -->
+  <div class="cal-banner" id="calBanner">
+    <span class="cal-label" id="calLabel">📸 Calibrating — keep panel CLEAN (0 / 40)</span>
+    <div class="cal-bar-wrap"><div class="cal-bar" id="calBar" style="width:0%"></div></div>
+    <button class="btn-recal" onclick="recalibrate()">↺ Recalibrate</button>
+  </div>
+
+  <!-- Stats Row -->
+  <div class="stats">
+    <div class="card">
+      <span class="card-label">Anomaly Score</span>
+      <span class="card-val" id="scoreVal">0.00</span>
+      <div class="bar-wrap"><div class="bar" id="scoreBar"></div></div>
+    </div>
+    <div class="card">
+      <span class="card-label">Panel Status</span>
+      <span class="card-val green" id="statusVal">CLEAN</span>
+      <div class="badge clean" id="statusBadge"><span class="dot"></span><span id="statusSub">Operational</span></div>
+    </div>
+    <div class="card">
+      <span class="card-label">Relay / Cleaner</span>
+      <span class="card-val" id="relayVal">OFF</span>
+      <div class="toggle-wrap"><div class="toggle" id="relayToggle" onclick="manualRelay()"><div class="toggle-knob"></div></div></div>
+    </div>
+    <div class="card">
+      <span class="card-label">Frames Processed</span>
+      <span class="card-val" id="frameVal">0</span>
+      <span class="mono" style="font-size:.75rem;color:var(--text3);margin-top:8px;display:block"><span id="fpsVal">0</span> fps</span>
+    </div>
+  </div>
+
+  <!-- Main Grid -->
+  <div class="grid">
+    <!-- Real camera feed -->
+    <div class="panel">
+      <div class="ph">
+        <span class="ph-title">📷 Live Camera Feed</span>
+        <span class="live-badge"><span class="rdot"></span>LIVE</span>
+      </div>
+      <div class="cam-wrap">
+        <img id="camFeed" src="/video_feed" alt="Camera feed" onerror="showCamError()"/>
+      </div>
+      <div class="cam-info">
+        <span id="camRes">640 × 480</span>
+        <span>Reference-Frame Anomaly Detection</span>
+        <span id="camThr">Threshold: 5.0</span>
+      </div>
+    </div>
+
+    <!-- Score chart -->
+    <div class="panel">
+      <div class="ph">
+        <span class="ph-title">📈 Anomaly Score — Real Time</span>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="scoreChart" height="200"></canvas>
+      </div>
+      <div class="chart-legend">
+        <div class="leg"><span class="leg-dot" style="background:var(--green)"></span>Clean zone</div>
+        <div class="leg"><span class="leg-dot" style="background:var(--red)"></span>Anomaly zone</div>
+        <div class="leg"><span class="leg-line"></span>Threshold</div>
+      </div>
+      <div class="ctrl-row">
+        <span class="ctrl-label">Threshold</span>
+        <input class="ctrl-input" id="thrInput" type="number" value="5.0" min="0.5" max="10" step="0.5" onchange="setThreshold(this.value)"/>
+        <button class="btn" onclick="recalibrate()">↺ Recalibrate</button>
+        <button class="btn" onclick="clearLog()">Clear Log</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom -->
+  <div class="bottom">
+    <!-- Event Log -->
+    <div class="panel">
+      <div class="ph"><span class="ph-title">📋 Event Log</span></div>
+      <div class="log-box" id="logBox"></div>
+    </div>
+    <!-- History Table -->
+    <div class="panel">
+      <div class="ph"><span class="ph-title">🕒 Detection History</span></div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Score</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody id="histBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Alert banner -->
+<div class="alert" id="alertEl">
+  <div class="alert-inner">
+    <span>⚠️</span><span id="alertMsg">Anomaly detected — relay triggered</span>
+    <button class="alert-close" onclick="hideAlert()">✕</button>
+  </div>
+</div>
+
+<script>
+// ── Socket.IO connection ────────────────────────────
+const socket = io();
+let threshold = 5.0;
+let relayOn = false;
+let scoreHistory = [];
+const MAX_H = 80;
+let alertTimer = null;
+
+socket.on('connect', () => {
+  document.getElementById('connDot').style.background = '#22c55e';
+  document.getElementById('connText').textContent = 'Connected';
+});
+socket.on('disconnect', () => {
+  document.getElementById('connDot').style.background = '#ef4444';
+  document.getElementById('connText').textContent = 'Disconnected';
+});
+
+// ── State updates ────────────────────────────────────
+socket.on('state', d => {
+  threshold = d.threshold;
+  relayOn = d.relay;
+
+  // Score card
+  const s = d.score;
+  document.getElementById('scoreVal').textContent = s.toFixed(2);
+  document.getElementById('scoreBar').style.width = Math.min(s/10*100,100)+'%';
+
+  // Status card
+  const dirty = d.is_dirty;
+  const sv = document.getElementById('statusVal');
+  sv.textContent = dirty ? 'DIRTY' : 'CLEAN';
+  sv.className = 'card-val '+(dirty?'red':'green');
+  const sb = document.getElementById('statusBadge');
+  sb.className = 'badge '+(dirty?'dirty':'clean');
+  document.getElementById('statusSub').textContent = dirty ? 'Anomaly Detected' : 'Operational';
+
+  // Relay
+  document.getElementById('relayVal').textContent = d.relay ? 'ON' : 'OFF';
+  document.getElementById('relayToggle').className = 'toggle'+(d.relay?' on':'');
+
+  // Frames
+  document.getElementById('frameVal').textContent = d.frame.toLocaleString();
+  document.getElementById('fpsVal').textContent = d.fps.toFixed(1);
+
+  // Threshold display
+  document.getElementById('camThr').textContent = 'Threshold: '+d.threshold.toFixed(1);
+  document.getElementById('thrInput').value = d.threshold.toFixed(1);
+
+  // Calibration banner
+  const calBanner = document.getElementById('calBanner');
+  if (d.state === 'calibrating') {
+    calBanner.classList.remove('hidden');
+    const pct = Math.round(d.calibration_progress * 100);
+    document.getElementById('calBar').style.width = pct+'%';
+    document.getElementById('calLabel').textContent =
+      `📸 Calibrating — keep panel CLEAN (${Math.round(d.calibration_progress*40)} / 40)`;
+  } else {
+    calBanner.classList.add('hidden');
+  }
+
+  // Push to chart history
+  scoreHistory.push(s);
+  if (scoreHistory.length > MAX_H) scoreHistory.shift();
+  drawChart();
+});
+
+socket.on('log', entry => addLog(entry));
+socket.on('event_history', entries => { entries.forEach(e => addLog(e, false)); });
+socket.on('history_row', row => addHistoryRow(row));
+
+// ── Alert for dirty ──────────────────────────────────
+socket.on('state', d => {
+  if (d.is_dirty) {
+    showAlert(`⚠️ Anomaly score ${d.score.toFixed(2)} — Relay triggered!`);
+  }
+});
+
+// ── Chart (Canvas) ───────────────────────────────────
+const chartCanvas = document.getElementById('scoreChart');
+const ctx = chartCanvas.getContext('2d');
+
+function drawChart() {
+  const W = chartCanvas.offsetWidth || 500;
+  const H = 200;
+  const dpr = window.devicePixelRatio || 1;
+  chartCanvas.width = W * dpr;
+  chartCanvas.height = H * dpr;
+  chartCanvas.style.width = W+'px';
+  chartCanvas.style.height = H+'px';
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0,0,W,H);
+
+  const PAD = {t:12, r:12, b:28, l:36};
+  const iW = W-PAD.l-PAD.r, iH = H-PAD.t-PAD.b;
+  const data = scoreHistory;
+
+  // Grid
+  ctx.strokeStyle = 'rgba(99,179,237,0.07)';
+  ctx.lineWidth = 1;
+  ctx.font = '10px JetBrains Mono, monospace';
+  ctx.fillStyle = 'rgba(148,163,184,0.5)';
+  ctx.textAlign = 'right';
+  for (let v=0; v<=10; v+=2) {
+    const y = PAD.t + iH - (v/10)*iH;
+    ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(PAD.l+iW,y); ctx.stroke();
+    ctx.fillText(v, PAD.l-4, y+4);
+  }
+
+  // Threshold line
+  const ty = PAD.t + iH - (threshold/10)*iH;
+  ctx.strokeStyle='#f97316'; ctx.lineWidth=1.5; ctx.setLineDash([5,4]);
+  ctx.beginPath(); ctx.moveTo(PAD.l,ty); ctx.lineTo(PAD.l+iW,ty); ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (data.length < 2) return;
+
+  const xp = i => PAD.l + (i/(MAX_H-1))*iW;
+  const yp = v => PAD.t + iH - (Math.min(v,10)/10)*iH;
+
+  // Fill + line
+  ctx.beginPath();
+  ctx.moveTo(xp(0), yp(data[0]));
+  for (let i=1;i<data.length;i++) ctx.lineTo(xp(i), yp(data[i]));
+  const isDirty = data[data.length-1] >= threshold;
+  const grad = ctx.createLinearGradient(0,PAD.t,0,PAD.t+iH);
+  grad.addColorStop(0, isDirty?'rgba(239,68,68,0.3)':'rgba(34,197,94,0.2)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.lineTo(xp(data.length-1), PAD.t+iH);
+  ctx.lineTo(xp(0), PAD.t+iH);
+  ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(xp(0), yp(data[0]));
+  for (let i=1;i<data.length;i++) ctx.lineTo(xp(i), yp(data[i]));
+  ctx.strokeStyle=isDirty?'#ef4444':'#22c55e'; ctx.lineWidth=2; ctx.stroke();
+
+  // Latest dot
+  const li=data.length-1;
+  ctx.beginPath(); ctx.arc(xp(li),yp(data[li]),4,0,Math.PI*2);
+  ctx.fillStyle=isDirty?'#ef4444':'#22c55e'; ctx.fill();
+}
+
+// ── Log ──────────────────────────────────────────────
+function addLog(e, prepend=true) {
+  const box = document.getElementById('logBox');
+  const el = document.createElement('div');
+  el.className='log-entry '+(e.level||'info');
+  el.innerHTML=`<span class="log-t">${e.t}</span><span class="log-m">${e.msg}</span>`;
+  if (prepend) box.prepend(el); else box.appendChild(el);
+  while(box.children.length>80) box.removeChild(box.lastChild);
+}
+function clearLog() { document.getElementById('logBox').innerHTML=''; }
+
+// ── History ───────────────────────────────────────────
+function addHistoryRow(r) {
+  const sc = parseFloat(r.score);
+  const sc_cls = sc>=threshold?'td-high':sc>=threshold*0.7?'td-med':'td-low';
+  const st_cls = r.status==='DIRTY'?'td-dirty':'td-clean';
+  const tr = document.createElement('tr');
+  tr.innerHTML=`<td>${r.t}</td><td class="${sc_cls}">${r.score}</td><td class="${st_cls}">${r.status}</td><td>${r.action}</td>`;
+  const body = document.getElementById('histBody');
+  body.prepend(tr);
+  if(body.children.length>40) body.removeChild(body.lastChild);
+}
+
+// ── Controls ──────────────────────────────────────────
+function setThreshold(v) {
+  socket.emit('set_threshold', {threshold: parseFloat(v)||5.0});
+}
+function recalibrate() {
+  socket.emit('recalibrate');
+  document.getElementById('calBanner').classList.remove('hidden');
+}
+function manualRelay() {
+  socket.emit('manual_relay', {state: !relayOn});
+}
+
+// ── Alert ─────────────────────────────────────────────
+let lastAlert = 0;
+function showAlert(msg) {
+  const now = Date.now();
+  if(now - lastAlert < 8000) return;
+  lastAlert = now;
+  document.getElementById('alertMsg').textContent = msg;
+  document.getElementById('alertEl').classList.add('show');
+  clearTimeout(alertTimer);
+  alertTimer = setTimeout(hideAlert, 7000);
+}
+function hideAlert() { document.getElementById('alertEl').classList.remove('show'); }
+
+// ── Camera error ──────────────────────────────────────
+function showCamError() {
+  const w = document.querySelector('.cam-wrap');
+  w.innerHTML='<div class="no-cam">📷 Camera feed unavailable<br><small>Make sure the Python server is running</small></div>';
+}
+
+// ── Clock ─────────────────────────────────────────────
+setInterval(()=>{ document.getElementById('clock').textContent=new Date().toTimeString().slice(0,8); },1000);
+
+// Resize chart on window resize
+window.addEventListener('resize', drawChart);
+drawChart();
+</script>
+</body>
+</html>
