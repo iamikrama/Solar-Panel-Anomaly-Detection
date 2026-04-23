@@ -39,6 +39,20 @@ try:
 except ImportError:
     HTTP_OK = False
 
+# Trained model (.pkl from train.py)
+try:
+    import joblib
+    JOBLIB_OK = True
+except ImportError:
+    try:
+        import pickle as joblib
+        JOBLIB_OK = True
+    except ImportError:
+        JOBLIB_OK = False
+
+MODEL_PATH = "model/solarguard_model.pkl"
+IMG_SIZE   = (64, 64)
+
 # ── Logging ───────────────────────────────────────────
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
@@ -58,9 +72,83 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 
 # ─────────────────────────────────────────────────────
-#  Anomaly Detection Engine
-#  Uses reference-frame deviation — same concept as FOMO-AD:
-#  learn what "normal" looks like, flag deviations
+#  Trained Model Engine (from train.py .pkl)
+#  Used when model/solarguard_model.pkl exists
+# ─────────────────────────────────────────────────────
+class TrainedModelEngine:
+    """
+    Wraps the sklearn model trained by train.py.
+    Produces anomaly scores 0–10 compatible with the dashboard.
+    """
+    def __init__(self, bundle: dict, threshold: float = 5.0):
+        self.model      = bundle["model"]
+        self.scaler     = bundle["scaler"]
+        self.pca        = bundle["pca"]
+        self.img_size   = tuple(bundle.get("img_size", IMG_SIZE))
+        self.threshold  = threshold
+        self.model_type = bundle.get("model_type", "unknown")
+        self.trained_at = bundle.get("trained_at", "")
+
+        # Compat attrs expected by CameraThread
+        self.calibrated             = True   # no calibration needed
+        self.warmed_up              = True
+        self.calibration_count      = 1
+        self.ref_frames_needed      = 1
+        self.warmup_count           = 1
+        self.warmup_frames_needed   = 1
+        self.total_frames           = 0
+        self.dirty_frames           = 0
+        self._score_window          = deque(maxlen=5)
+
+        log.info(f"✅ Trained model loaded: {self.model_type}  (trained {self.trained_at})")
+
+    def score(self, frame_gray: np.ndarray):
+        self.total_frames += 1
+        # Reconstruct BGR-like from gray for feature extraction
+        gray_bgr = cv2.cvtColor(frame_gray, cv2.COLOR_GRAY2BGR)
+        img = cv2.resize(gray_bgr, self.img_size)
+        gray2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        flat = gray2.flatten().astype(np.float32) / 255.0
+        X = self.scaler.transform([flat])
+        X_pca = self.pca.transform(X)
+
+        pred  = self.model.predict(X_pca)[0]    # +1 = normal, -1 = anomaly
+        # decision_function: more negative = more anomalous
+        try:
+            df = float(self.model.decision_function(X_pca)[0])
+        except Exception:
+            df = 1.0 if pred == 1 else -1.0
+
+        # Map decision function to 0–10 score
+        # Typical range: clean ≈ 0.1–0.5, anomaly ≈ -0.5 to -1.5
+        # score = clip( (0 - df) * 6, 0, 10 )
+        raw_score = max(0.0, min(10.0, (0.0 - df) * 6.0))
+
+        self._score_window.append(raw_score)
+        smooth = float(np.mean(self._score_window))
+
+        if smooth >= self.threshold:
+            self.dirty_frames += 1
+
+        # Heatmap: gradient image for visual feedback
+        heatmap = self._make_score_heatmap(frame_gray, smooth)
+        return smooth, heatmap, True   # (score, heatmap, warmed_up)
+
+    def _make_score_heatmap(self, gray: np.ndarray, score: float) -> np.ndarray:
+        """Generate a simple heatmap proportional to anomaly score."""
+        intensity = np.clip(score / 10.0, 0, 1)
+        mask = (np.ones_like(gray, dtype=np.float32) * intensity * 255).astype(np.uint8)
+        return cv2.applyColorMap(mask, cv2.COLORMAP_JET)
+
+    def calibrate_frame(self, _):
+        return True   # no-op
+
+    def reset_calibration(self):
+        log.info("[TrainedModel] reset_calibration is a no-op — model is pre-trained")
+
+
+# ─────────────────────────────────────────────────────
+#  Reference-Frame Engine (fallback when no .pkl)
 # ─────────────────────────────────────────────────────
 class AnomalyEngine:
     def __init__(self, threshold: float = 5.0, ref_frames: int = 40):
@@ -687,14 +775,25 @@ Examples:
     log.info(f"  Source      : {source_label}")
     log.info(f"  ESP32 IP    : {args.esp_ip}  (disabled: {args.no_esp32})")
     log.info(f"  Threshold   : {args.threshold}")
-    log.info(f"  Ref Frames  : {args.ref_frames}")
     log.info(f"  Dashboard   : http://localhost:{args.port}")
     log.info("=" * 55)
 
-    engine = AnomalyEngine(
-        threshold=args.threshold,
-        ref_frames=args.ref_frames
-    )
+    # ── Choose engine: trained model OR reference-frame fallback ──
+    if JOBLIB_OK and os.path.exists(MODEL_PATH):
+        log.info(f"🧠 Loading trained model from {MODEL_PATH}")
+        bundle = joblib.load(MODEL_PATH)
+        engine = TrainedModelEngine(bundle, threshold=args.threshold)
+        log.info(f"   Model type  : {engine.model_type}")
+        log.info(f"   Trained at  : {engine.trained_at}")
+    else:
+        log.info("⚙️  No trained model found — using reference-frame detection")
+        log.info("   Run: python3 capture_server.py  → capture images")
+        log.info("   Run: python3 train.py            → train model")
+        engine = AnomalyEngine(
+            threshold=args.threshold,
+            ref_frames=args.ref_frames
+        )
+
     relay = RelayController(
         esp32_ip=args.esp_ip,
         enabled=not args.no_esp32
